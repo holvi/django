@@ -15,6 +15,35 @@ from django.utils.translation import get_language, to_locale, check_for_language
 _format_cache = {}
 _format_modules_cache = {}
 
+ISO_INPUT_FORMATS = {
+    'DATE_INPUT_FORMATS': ('%Y-%m-%d',),
+    'TIME_INPUT_FORMATS': ('%H:%M:%S', '%H:%M'),
+    'DATETIME_INPUT_FORMATS': (
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M:%S.%f',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d'
+    ),
+}
+
+FORMAT_SETTINGS = frozenset([
+    'DECIMAL_SEPARATOR',
+    'THOUSAND_SEPARATOR',
+    'NUMBER_GROUPING',
+    'FIRST_DAY_OF_WEEK',
+    'MONTH_DAY_FORMAT',
+    'TIME_FORMAT',
+    'DATE_FORMAT',
+    'DATETIME_FORMAT',
+    'SHORT_DATE_FORMAT',
+    'SHORT_DATETIME_FORMAT',
+    'YEAR_MONTH_FORMAT',
+    'DATE_INPUT_FORMATS',
+    'TIME_INPUT_FORMATS',
+    'DATETIME_INPUT_FORMATS',
+])
+
+
 def reset_format_cache():
     """Clear any cached formats.
 
@@ -66,6 +95,8 @@ def get_format(format_type, lang=None, use_l10n=None):
     be localized (or not), overriding the value of settings.USE_L10N.
     """
     format_type = smart_str(format_type)
+    if format_type not in FORMAT_SETTINGS:
+        return format_type
     if use_l10n or (use_l10n is None and settings.USE_L10N):
         if lang is None:
             lang = get_language()
@@ -81,6 +112,11 @@ def get_format(format_type, lang=None, use_l10n=None):
             for module in get_format_modules(lang):
                 try:
                     val = getattr(module, format_type)
+                    for iso_input in ISO_INPUT_FORMATS.get(format_type, ()):
+                        if iso_input not in val:
+                            if isinstance(val, tuple):
+                                val = list(val)
+                            val.append(iso_input)
                     _format_cache[cache_key] = val
                     return val
                 except AttributeError:
