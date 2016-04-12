@@ -255,6 +255,7 @@ def is_safe_url(url, host=None):
     Always returns ``False`` on an empty url.
     """
     if url is not None:
+	url = unicode(url)
         url = url.strip()
     if not url:
         return False
