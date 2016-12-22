@@ -3,7 +3,7 @@ from itertools import chain
 
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db.models.constants import LOOKUP_SEP
-from django.db.models.expressions import OrderBy, Random, RawSQL, Ref
+from django.db.models.expressions import Col, OrderBy, Random, RawSQL, Ref
 from django.db.models.query_utils import QueryWrapper, select_related_descend
 from django.db.models.sql.constants import (
     CURSOR, GET_ITERATOR_CHUNK_SIZE, MULTI, NO_RESULTS, ORDER_DIR, SINGLE,
@@ -360,6 +360,27 @@ class SQLCompiler(object):
             return node.output_field.select_format(self, sql, params)
         return sql, params
 
+    def get_combinator_sql(self, combinator):
+        features = self.connection.features
+        compilers = [query.get_compiler(self.using, self.connection) for query in self.query.combined_queries]
+        if not getattr(features, 'supports_slicing_ordering_in_compound'):
+            for query, compiler in zip(self.query.combined_queries, compilers):
+                if query.low_mark or query.high_mark:
+                    raise DatabaseError('LIMIT/OFFSET not allowed in subqueries of compound statements')
+                if compiler.get_order_by():
+                    raise DatabaseError('ORDER BY not allowed in subqueries of compound statements')
+        parts = (compiler.as_sql() for compiler in compilers)
+        combinator_sql = self.connection.set_operators[combinator[0]]
+        if combinator[1] and combinator[0] == 'union':
+            combinator_sql += ' ALL'
+        braces = '({})' if features.supports_slicing_ordering_in_compound else '{}'
+        sql_parts, args_parts = zip(*((braces.format(sql), args) for sql, args in parts))
+        result = [' {} '.format(combinator_sql).join(sql_parts)]
+        params = []
+        for part in args_parts:
+            params.extend(part)
+        return result, params
+
     def as_sql(self, with_limits=True, with_col_aliases=False):
         """
         Creates the SQL for this query. Returns the SQL string and list of
@@ -377,69 +398,77 @@ class SQLCompiler(object):
             # docstring of get_from_clause() for details.
             from_, f_params = self.get_from_clause()
 
+            for_update_part = None
             where, w_params = self.compile(self.where) if self.where is not None else ("", [])
             having, h_params = self.compile(self.having) if self.having is not None else ("", [])
-            params = []
-            result = ['SELECT']
 
-            if self.query.distinct:
-                result.append(self.connection.ops.distinct_sql(distinct_fields))
+            combinator = self.query.combinator
+            features = self.connection.features
+            if combinator:
+                if not getattr(features, 'supports_select_{}'.format(combinator[0])):
+                    raise DatabaseError('{} not supported on this database backend'.format(combinator[0].upper()))
+                result, params = self.get_combinator_sql(combinator)
+            else:
+                result = ['SELECT']
+                params = []
 
-            out_cols = []
-            col_idx = 1
-            for _, (s_sql, s_params), alias in self.select + extra_select:
-                if alias:
-                    s_sql = '%s AS %s' % (s_sql, self.connection.ops.quote_name(alias))
-                elif with_col_aliases:
-                    s_sql = '%s AS %s' % (s_sql, 'Col%d' % col_idx)
-                    col_idx += 1
-                params.extend(s_params)
-                out_cols.append(s_sql)
+                if self.query.distinct:
+                    result.append(self.connection.ops.distinct_sql(distinct_fields))
 
-            result.append(', '.join(out_cols))
+                out_cols = []
+                col_idx = 1
+                for _, (s_sql, s_params), alias in self.select + extra_select:
+                    if alias:
+                        s_sql = '%s AS %s' % (s_sql, self.connection.ops.quote_name(alias))
+                    elif with_col_aliases:
+                        s_sql = '%s AS %s' % (s_sql, 'Col%d' % col_idx)
+                        col_idx += 1
+                    params.extend(s_params)
+                    out_cols.append(s_sql)
 
-            result.append('FROM')
-            result.extend(from_)
-            params.extend(f_params)
+                result.append(', '.join(out_cols))
 
-            for_update_part = None
-            if self.query.select_for_update and self.connection.features.has_select_for_update:
-                if self.connection.get_autocommit():
-                    raise TransactionManagementError("select_for_update cannot be used outside of a transaction.")
+                result.append('FROM')
+                result.extend(from_)
+                params.extend(f_params)
 
-                nowait = self.query.select_for_update_nowait
-                skip_locked = self.query.select_for_update_skip_locked
-                # If it's a NOWAIT/SKIP LOCKED query but the backend doesn't
-                # support it, raise a DatabaseError to prevent a possible
-                # deadlock.
-                if nowait and not self.connection.features.has_select_for_update_nowait:
-                    raise DatabaseError('NOWAIT is not supported on this database backend.')
-                elif skip_locked and not self.connection.features.has_select_for_update_skip_locked:
-                    raise DatabaseError('SKIP LOCKED is not supported on this database backend.')
-                for_update_part = self.connection.ops.for_update_sql(nowait=nowait, skip_locked=skip_locked)
+                if self.query.select_for_update and self.connection.features.has_select_for_update:
+                    if self.connection.get_autocommit():
+                        raise TransactionManagementError("select_for_update cannot be used outside of a transaction.")
 
-            if for_update_part and self.connection.features.for_update_after_from:
-                result.append(for_update_part)
+                    nowait = self.query.select_for_update_nowait
+                    skip_locked = self.query.select_for_update_skip_locked
+                    # If it's a NOWAIT/SKIP LOCKED query but the backend doesn't
+                    # support it, raise a DatabaseError to prevent a possible
+                    # deadlock.
+                    if nowait and not self.connection.features.has_select_for_update_nowait:
+                        raise DatabaseError('NOWAIT is not supported on this database backend.')
+                    elif skip_locked and not self.connection.features.has_select_for_update_skip_locked:
+                        raise DatabaseError('SKIP LOCKED is not supported on this database backend.')
+                    for_update_part = self.connection.ops.for_update_sql(nowait=nowait, skip_locked=skip_locked)
 
-            if where:
-                result.append('WHERE %s' % where)
-                params.extend(w_params)
+                if for_update_part and self.connection.features.for_update_after_from:
+                    result.append(for_update_part)
 
-            grouping = []
-            for g_sql, g_params in group_by:
-                grouping.append(g_sql)
-                params.extend(g_params)
-            if grouping:
-                if distinct_fields:
-                    raise NotImplementedError(
-                        "annotate() + distinct(fields) is not implemented.")
-                if not order_by:
-                    order_by = self.connection.ops.force_no_ordering()
-                result.append('GROUP BY %s' % ', '.join(grouping))
+                if where:
+                    result.append('WHERE %s' % where)
+                    params.extend(w_params)
 
-            if having:
-                result.append('HAVING %s' % having)
-                params.extend(h_params)
+                grouping = []
+                for g_sql, g_params in group_by:
+                    grouping.append(g_sql)
+                    params.extend(g_params)
+                if grouping:
+                    if distinct_fields:
+                        raise NotImplementedError(
+                            "annotate() + distinct(fields) is not implemented.")
+                    if not order_by:
+                        order_by = self.connection.ops.force_no_ordering()
+                    result.append('GROUP BY %s' % ', '.join(grouping))
+
+                if having:
+                    result.append('HAVING %s' % having)
+                    params.extend(h_params)
 
             if order_by:
                 ordering = []
@@ -564,7 +593,19 @@ class SQLCompiler(object):
                                                        order, already_seen))
             return results
         targets, alias, _ = self.query.trim_joins(targets, joins, path)
-        return [(OrderBy(t.get_col(alias), descending=descending), False) for t in targets]
+        results = []
+        for target in targets:
+            col = target.get_col(alias)
+            # Relabel order by columns to raw numbers if this is a combined query.
+            # This is neccessary since we cannot reference the columns by the fully qualified name and the simple
+            # column names might collide.
+            if self.query.combinator:
+                for idx, (expression, _, _) in enumerate(self.select):
+                    if isinstance(expression, Col) and alias == expression.alias and target == expression.target:
+                        col = RawSQL('%d' % (idx + 1), ())
+                        break
+            results.append((OrderBy(col, descending=descending), False))
+        return results
 
     def _setup_joins(self, pieces, opts, alias):
         """

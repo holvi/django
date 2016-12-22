@@ -125,6 +125,12 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     operators = _UninitializedOperatorsDescriptor()
 
+    set_operators = {
+        'union': 'UNION',
+        'intersect': 'INTERSECT',
+        'except': 'MINUS',
+    }
+
     _standard_operators = {
         'exact': '= %s',
         'iexact': '= UPPER(%s)',

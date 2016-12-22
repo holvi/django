@@ -815,6 +815,25 @@ class QuerySet(object):
         else:
             return self._filter_or_exclude(None, **filter_obj)
 
+    def _combinator_query(self, combinator, *other_qs, **kwargs):
+        # Clone the query so we inherit the select list and everything
+        clone = self._clone()
+        # Clear limits and ordering, so they can be reapplied
+        clone.query.clear_ordering(True)
+        clone.query.clear_limits()
+        clone.query.combined_queries = (self.query,) + tuple(qs.query for qs in other_qs)
+        clone.query.combinator = (combinator, kwargs.pop('all', False))
+        return CombinedQuerySet(clone)
+
+    def union(self, *other_qs, **kwargs):
+        return self._combinator_query('union', *other_qs, **kwargs)
+
+    def intersect(self, *other_qs):
+        return self._combinator_query('intersect', *other_qs)
+
+    def minus(self, *other_qs):
+        return self._combinator_query('except', *other_qs)
+
     def select_for_update(self, nowait=False, skip_locked=False):
         """
         Returns a new QuerySet instance that will select objects with a
@@ -1151,6 +1170,36 @@ class EmptyQuerySet(six.with_metaclass(InstanceCheckMeta)):
 
     def __init__(self, *args, **kwargs):
         raise TypeError("EmptyQuerySet can't be instantiated")
+
+
+class RestrictedQuerySet(object):
+    # TODO: Ideas on how to make that nicer?
+    _allowed_methods = set()
+
+    def __init__(self, qs):
+        self._qs = qs
+
+    def __repr__(self):
+        data = list(self[:REPR_OUTPUT_SIZE + 1])
+        if len(data) > REPR_OUTPUT_SIZE:
+            data[-1] = "...(remaining elements truncated)..."
+        return '<%s %r>' % (self.__class__.__name__, data)
+
+    def __getitem__(self, k):
+        return self.__getattr__('__getitem__')(k)
+
+    def __getattr__(self, attr):
+        try:
+            original_attr = getattr(self._qs, attr)
+            if not callable(original_attr) or attr in self._allowed_methods:
+                return original_attr
+            raise AttributeError("This method is not supported  by {}".format(self.__class__))
+        except Exception:
+            raise
+
+
+class CombinedQuerySet(RestrictedQuerySet):
+    _allowed_methods = {'__getitem__', 'minus', 'intersect', 'union', 'order_by'}
 
 
 class RawQuerySet(object):

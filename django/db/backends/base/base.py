@@ -44,6 +44,12 @@ class BaseDatabaseWrapper(object):
 
     queries_limit = 9000
 
+    set_operators = {
+        'union': 'UNION',
+        'intersect': 'INTERSECT',
+        'except': 'EXCEPT',
+    }
+
     def __init__(self, settings_dict, alias=DEFAULT_DB_ALIAS,
                  allow_thread_sharing=False):
         # Connection related attributes.

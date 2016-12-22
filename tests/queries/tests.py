@@ -3797,3 +3797,61 @@ class Ticket23622Tests(TestCase):
             set(Ticket23605A.objects.filter(qy).values_list('pk', flat=True))
         )
         self.assertSequenceEqual(Ticket23605A.objects.filter(qx), [a2])
+
+
+@skipUnlessDBFeature('supports_select_union')
+class QuerySetSetOperationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        Number.objects.bulk_create(Number(num=i) for i in range(10))
+
+    def number_transform(self, value):
+        return value.num
+
+    def test_simple_union(self):
+        qs1 = Number.objects.filter(num__lte=1)
+        qs2 = Number.objects.filter(num__gte=8)
+        qs3 = Number.objects.filter(num=5)
+        self.assertQuerysetEqual(qs1.union(qs2, qs3), [0, 1, 5, 8, 9], self.number_transform, False)
+
+    @skipUnlessDBFeature('supports_select_intersect')
+    def test_simple_intersect(self):
+        qs1 = Number.objects.filter(num__lte=5)
+        qs2 = Number.objects.filter(num__gte=5)
+        qs3 = Number.objects.filter(num__gte=4, num__lte=6)
+        self.assertQuerysetEqual(qs1.intersect(qs2, qs3), [5], self.number_transform, False)
+
+    @skipUnlessDBFeature('supports_select_except')
+    def test_simple_minus(self):
+        qs1 = Number.objects.filter(num__lte=5)
+        qs2 = Number.objects.filter(num__lte=4)
+        self.assertQuerysetEqual(qs1.minus(qs2), [5], self.number_transform, False)
+
+    @skipUnlessDBFeature('supports_select_union')
+    def test_union_distinct(self):
+        qs1 = Number.objects.all()
+        qs2 = Number.objects.all()
+        self.assertEqual(len(list(qs1.union(qs2, all=True))), 20)
+        self.assertEqual(len(list(qs1.union(qs2))), 10)
+
+    def test_limits(self):
+        qs1 = Number.objects.all()
+        qs2 = Number.objects.all()
+        self.assertEqual(len(list(qs1.union(qs2)[:2])), 2)
+
+    def test_ordering(self):
+        qs1 = Number.objects.all().filter(num__lte=1)
+        qs2 = Number.objects.all().filter(num__gte=2, num__lte=3)
+        self.assertQuerysetEqual(qs1.union(qs2).order_by('-num'), [3, 2, 1, 0], self.number_transform)
+
+    @skipUnlessDBFeature('supports_slicing_ordering_in_compound')
+    def test_ordering_subqueries(self):
+        qs1 = Number.objects.filter().order_by('num')[:2]
+        qs2 = Number.objects.filter().order_by('-num')[:2]
+        self.assertQuerysetEqual(qs1.union(qs2).order_by('-num')[:4], [9, 8, 1, 0], self.number_transform)
+
+    def test_fun_with_values_over_multiple_models(self):
+        ReservedName.objects.create(name='99 little bugs', order=99)
+        qs1 = Number.objects.filter(num=1).values_list('num', flat=True)
+        qs2 = ReservedName.objects.values_list('order')
+        self.assertEqual(list(qs1.union(qs2).order_by('num')), [1, 99])

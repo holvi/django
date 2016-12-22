@@ -35,6 +35,9 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_temporal_subtraction = True
     ignores_table_name_case = True
 
+    supports_select_intersect = True
+    supports_select_except = True
+
     @cached_property
     def uses_savepoints(self):
         return Database.sqlite_version_info >= (3, 6, 8)

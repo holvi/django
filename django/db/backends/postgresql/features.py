@@ -33,6 +33,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     can_clone_databases = True
     supports_temporal_subtraction = True
 
+    supports_select_intersect = True
+    supports_select_except = True
+    supports_slicing_ordering_in_compound = True
+
     @cached_property
     def has_select_for_update_skip_locked(self):
         return self.connection.pg_version >= 90500
