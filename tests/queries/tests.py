@@ -8,9 +8,10 @@ from operator import attrgetter
 
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db import DEFAULT_DB_ALIAS, connection
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, IntegerField, Q, Value
 from django.db.models.sql.constants import LOUTER
 from django.db.models.sql.where import NothingNode, WhereNode
+from django.db.utils import DatabaseError
 from django.test import TestCase, skipUnlessDBFeature
 from django.test.utils import CaptureQueriesContext
 from django.utils import six
@@ -3855,3 +3856,21 @@ class QuerySetSetOperationTests(TestCase):
         qs1 = Number.objects.filter(num=1).values_list('num', flat=True)
         qs2 = ReservedName.objects.values_list('order')
         self.assertEqual(list(qs1.union(qs2).order_by('num')), [1, 99])
+
+    def test_order_raises_on_non_selected_column(self):
+        qs1 = Number.objects.filter().annotate(annotation=Value(1, IntegerField())).values('annotation', num2=F('num'))
+        qs2 = Number.objects.filter().values('id', 'num')
+        msg = "ORDER BY term does not match any column in the result set"
+
+        # Should not raise
+        list(qs1.union(qs2).order_by('annotation'))
+        list(qs1.union(qs2).order_by('num2'))
+
+        # 'id' is not part of the select
+        with self.assertRaisesMessage(DatabaseError, msg):
+            list(qs1.union(qs2).order_by('id'))
+        # 'num' got realiased to num2
+        with self.assertRaisesMessage(DatabaseError, msg):
+            list(qs1.union(qs2).order_by('num'))
+        # switched order, now 'exists' again:
+        list(qs2.union(qs1).order_by('num'))

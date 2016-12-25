@@ -309,6 +309,21 @@ class SQLCompiler(object):
         seen = set()
 
         for expr, is_ref in order_by:
+            if self.query.combinator:
+                src = expr.get_source_expressions()[0]
+                # Relabel order by columns to raw numbers if this is a combined query.
+                # This is neccessary since we cannot reference the columns by the fully qualified name and the simple
+                # column names might collide.
+                for idx, (sel_expr, _, col_alias) in enumerate(self.select):
+                    if is_ref and col_alias == src.refs:
+                        src = src.source
+                    elif col_alias:
+                        continue
+                    if src == sel_expr:
+                        expr.set_source_expressions([RawSQL('%d' % (idx + 1), ())])
+                        break
+                else:
+                    raise DatabaseError("ORDER BY term does not match any column in the result set")
             resolved = expr.resolve_expression(
                 self.query, allow_joins=True, reuse=None)
             sql, params = self.compile(resolved)
@@ -593,19 +608,7 @@ class SQLCompiler(object):
                                                        order, already_seen))
             return results
         targets, alias, _ = self.query.trim_joins(targets, joins, path)
-        results = []
-        for target in targets:
-            col = target.get_col(alias)
-            # Relabel order by columns to raw numbers if this is a combined query.
-            # This is neccessary since we cannot reference the columns by the fully qualified name and the simple
-            # column names might collide.
-            if self.query.combinator:
-                for idx, (expression, _, _) in enumerate(self.select):
-                    if isinstance(expression, Col) and alias == expression.alias and target == expression.target:
-                        col = RawSQL('%d' % (idx + 1), ())
-                        break
-            results.append((OrderBy(col, descending=descending), False))
-        return results
+        return [(OrderBy(t.get_col(alias), descending=descending), False) for t in targets]
 
     def _setup_joins(self, pieces, opts, alias):
         """
