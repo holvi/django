@@ -360,7 +360,7 @@ class SQLCompiler(object):
             return node.output_field.select_format(self, sql, params)
         return sql, params
 
-    def get_combinator_sql(self, combinator):
+    def get_combinator_sql(self, combinator, all):
         features = self.connection.features
         compilers = [query.get_compiler(self.using, self.connection) for query in self.query.combined_queries]
         if not getattr(features, 'supports_slicing_ordering_in_compound'):
@@ -370,8 +370,8 @@ class SQLCompiler(object):
                 if compiler.get_order_by():
                     raise DatabaseError('ORDER BY not allowed in subqueries of compound statements')
         parts = (compiler.as_sql() for compiler in compilers)
-        combinator_sql = self.connection.set_operators[combinator[0]]
-        if combinator[1] and combinator[0] == 'union':
+        combinator_sql = self.connection.set_operators[combinator]
+        if all and combinator == 'union':
             combinator_sql += ' ALL'
         braces = '({})' if features.supports_slicing_ordering_in_compound else '{}'
         sql_parts, args_parts = zip(*((braces.format(sql), args) for sql, args in parts))
@@ -405,9 +405,9 @@ class SQLCompiler(object):
             combinator = self.query.combinator
             features = self.connection.features
             if combinator:
-                if not getattr(features, 'supports_select_{}'.format(combinator[0])):
-                    raise DatabaseError('{} not supported on this database backend'.format(combinator[0].upper()))
-                result, params = self.get_combinator_sql(combinator)
+                if not getattr(features, 'supports_select_{}'.format(combinator)):
+                    raise DatabaseError('{} not supported on this database backend'.format(combinator.upper()))
+                result, params = self.get_combinator_sql(combinator, self.query.combinator_all)
             else:
                 result = ['SELECT']
                 params = []

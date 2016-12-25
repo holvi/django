@@ -188,6 +188,7 @@ class Query(object):
 
         # Set combination stuff
         self.combinator = None
+        self.combinator_all = False
         self.combined_queries = ()
 
         # These are for extensions. The contents are more or less appended
@@ -308,6 +309,7 @@ class Query(object):
         obj._annotation_select_cache = None
         obj.max_depth = self.max_depth
         obj.combinator = self.combinator
+        obj.combinator_all = self.combinator_all
         obj.combined_queries = self.combined_queries
         obj._extra = self._extra.copy() if self._extra is not None else None
         if self.extra_select_mask is None:

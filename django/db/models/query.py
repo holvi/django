@@ -822,7 +822,8 @@ class QuerySet(object):
         clone.query.clear_ordering(True)
         clone.query.clear_limits()
         clone.query.combined_queries = (self.query,) + tuple(qs.query for qs in other_qs)
-        clone.query.combinator = (combinator, kwargs.pop('all', False))
+        clone.query.combinator = combinator
+        clone.query.combinator_all = kwargs.pop('all', False)
         return clone
 
     def union(self, *other_qs, **kwargs):
