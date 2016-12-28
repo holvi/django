@@ -135,14 +135,43 @@ class BaseTable(object):
     join_type = None
     parent_alias = None
 
-    def __init__(self, table_name, alias):
+    def __init__(self, table_name, alias, combined_queries=None, combinator=None, all=None):
         self.table_name = table_name
         self.table_alias = alias
+        self.combined_queries = combined_queries
+        self.combinator = combinator
+        self.all = all
 
     def as_sql(self, compiler, connection):
-        alias_str = '' if self.table_alias == self.table_name else (' %s' % self.table_alias)
-        base_sql = compiler.quote_name_unless_alias(self.table_name)
-        return base_sql + alias_str, []
+        # Ugly hack
+        alias_str = '' if self.table_alias == self.table_name and self.table_alias != 'subq' else (' %s' % self.table_alias)
+        if self.combined_queries:
+            base_sql, base_sql_params = self.get_combinator_sql(compiler)
+            base_sql = '(%s)' % base_sql
+        else:
+            base_sql, base_sql_params = compiler.quote_name_unless_alias(self.table_name), []
+        return base_sql + alias_str, base_sql_params
+
+    def get_combinator_sql(self, the_compiler):
+        features = the_compiler.connection.features
+        compilers = [query.get_compiler(the_compiler.using, the_compiler.connection) for query in self.combined_queries]
+        if not getattr(features, 'supports_slicing_ordering_in_compound'):
+            for query, compiler in zip(self.combined_queries, compilers):
+                if query.low_mark or query.high_mark:
+                    raise DatabaseError('LIMIT/OFFSET not allowed in subqueries of compound statements')
+                if compiler.get_order_by():
+                    raise DatabaseError('ORDER BY not allowed in subqueries of compound statements')
+        parts = (compiler.as_sql(with_col_aliases=True) for compiler in compilers)
+        combinator_sql = the_compiler.connection.set_operators[self.combinator]
+        if self.all and self.combinator == 'union':
+            combinator_sql += ' ALL'
+        braces = '({})' if features.supports_slicing_ordering_in_compound else '{}'
+        sql_parts, args_parts = zip(*((braces.format(sql), args) for sql, args in parts))
+        result = ' {} '.format(combinator_sql).join(sql_parts)
+        params = []
+        for part in args_parts:
+            params.extend(part)
+        return result, params
 
     def relabeled_clone(self, change_map):
         return self.__class__(self.table_name, change_map.get(self.table_alias, self.table_alias))

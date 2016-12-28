@@ -11,7 +11,6 @@ from django.db import DEFAULT_DB_ALIAS, connection
 from django.db.models import Count, F, IntegerField, Q, Value
 from django.db.models.sql.constants import LOUTER
 from django.db.models.sql.where import NothingNode, WhereNode
-from django.db.utils import DatabaseError
 from django.test import TestCase, skipUnlessDBFeature
 from django.test.utils import CaptureQueriesContext
 from django.utils import six
@@ -3860,17 +3859,81 @@ class QuerySetSetOperationTests(TestCase):
     def test_order_raises_on_non_selected_column(self):
         qs1 = Number.objects.filter().annotate(annotation=Value(1, IntegerField())).values('annotation', num2=F('num'))
         qs2 = Number.objects.filter().values('id', 'num')
-        msg = "ORDER BY term does not match any column in the result set"
-
         # Should not raise
         list(qs1.union(qs2).order_by('annotation'))
         list(qs1.union(qs2).order_by('num2'))
 
         # 'id' is not part of the select
-        with self.assertRaisesMessage(DatabaseError, msg):
+        with self.assertRaises(FieldError):
             list(qs1.union(qs2).order_by('id'))
         # 'num' got realiased to num2
-        with self.assertRaisesMessage(DatabaseError, msg):
+        with self.assertRaises(FieldError):
             list(qs1.union(qs2).order_by('num'))
         # switched order, now 'exists' again:
         list(qs2.union(qs1).order_by('num'))
+
+    def test_filter(self):
+        qs1 = Number.objects.all().filter(num__lte=1)
+        qs2 = Number.objects.all().filter(num__gte=2, num__lte=3)
+        self.assertQuerysetEqual(
+            qs1.union(qs2).order_by('-num').filter(num__in=[3, 0]),
+            [3, 0], self.number_transform)
+
+    def test_annotate(self):
+        qs1 = Number.objects.all().filter(num__lte=1)
+        qs2 = Number.objects.all().filter(num__gte=2, num__lte=3)
+        combined = qs1.union(qs2)
+        # Pretty stupid annotation, but can't do any better with the model
+        # at hand... Still, this does test that the group by feature.
+        from django.db.models import Max
+        combined = combined.annotate(max_num=Max('num'))
+        self.assertQuerysetEqual(
+            combined.order_by('-max_num'),
+            [3, 2, 1, 0], lambda x: x.max_num)
+
+    def test_aggregate(self):
+        qs1 = Number.objects.all().filter(num__lte=1)
+        qs2 = Number.objects.all().filter(num__gte=2, num__lte=3)
+        combined = qs1.union(qs2)
+        from django.db.models import Sum
+        results = combined.exclude(num=2).aggregate(sum=Sum('num'))
+        self.assertEqual(results['sum'], 3 + 1)
+
+    def test_values_annotation(self):
+        ReservedName.objects.create(name='foo', order=2)
+        ReservedName.objects.create(name='bar', order=3)
+        ReservedName.objects.create(name='foo', order=4)
+        ReservedName.objects.create(name='baz', order=6)
+        qs1 = ReservedName.objects.filter(name='foo')
+        qs2 = ReservedName.objects.filter(name='bar')
+        combined = qs1.union(qs2)
+        from django.db.models import Sum
+        qs = combined.values_list('name').annotate(sum=Sum('order')).order_by('name')
+        self.assertQuerysetEqual(qs, [('bar', 3), ('foo', 6)], lambda x: x)
+
+    def test_select_related(self):
+        carrot = Food.objects.create(name='carrot')
+        apple = Food.objects.create(name='apple')
+        Eaten.objects.create(food=carrot, meal='lunch')
+        Eaten.objects.create(food=apple, meal='lunch')
+        Eaten.objects.create(food=carrot, meal='supper')
+        Eaten.objects.create(food=carrot, meal='breakfast')
+        qs1 = Eaten.objects.filter(meal='lunch')
+        qs2 = Eaten.objects.filter(meal='supper')
+        combined = qs1.union(qs2).order_by('id')
+        qs = combined.select_related('food')
+        with self.assertNumQueries(1):
+            self.assertEqual(qs[0].food.name, 'carrot')
+
+    def test_foreign_key_filter(self):
+        carrot = Food.objects.create(name='carrot')
+        apple = Food.objects.create(name='apple')
+        Eaten.objects.create(food=carrot, meal='lunch')
+        Eaten.objects.create(food=apple, meal='lunch')
+        Eaten.objects.create(food=carrot, meal='supper')
+        Eaten.objects.create(food=carrot, meal='breakfast')
+        qs1 = Eaten.objects.filter(meal='lunch')
+        qs2 = Eaten.objects.filter(meal='supper')
+        combined = qs1.union(qs2).order_by('id')
+        qs = combined.filter(food__name='apple')
+        self.assertQuerysetEqual(qs, ['lunch'], lambda x: x.meal)

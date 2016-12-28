@@ -209,6 +209,76 @@ class Query(object):
 
         self.context = {}
 
+    def create_fake_model(self, restrict_to_fields):
+        # First, we assume there is no extra or select_related going on
+        # These could be handled, but we need a bit of simplification for
+        # first try.
+        assert not self.extra_select
+        assert not self.select_related
+        # Next, annotations will go as annotations in the new query, too.
+        # No need to do anything about those. So, we just need to build
+        # a new "model" for the query, and make sure it has the right
+        # set of fields and related objects available.
+        opts = self.get_meta()
+        fake_fields = []
+        pos = 0
+        # TODO: go over all fields instead of concrete fields
+        # Construct both fields on concrete_fields lists (or
+        # do the split in DuckMeta).
+        for field in opts.concrete_fields:
+            if restrict_to_fields and (
+                    field.name not in restrict_to_fields or
+                    field.attname not in restrict_to_fields):
+                continue
+            pos += 1
+            new_field = field.clone()
+            new_field.attname = field.attname
+            new_field.name = field.name
+            new_field.primary_key = False
+            new_field._unique = False
+            new_field.null = True
+            if new_field.remote_field:
+                new_field.remote_field.model = field.remote_field.model
+            new_field.column = 'Col%d' % pos
+            fake_fields.append(new_field)
+
+        outer_self = self
+
+        class DuckMeta(object):
+            ordering = ()
+
+            def __init__(self, fake_fields):
+                self.fake_fields = fake_fields
+                self.db_table = 'subq'
+                self.concrete_fields = fake_fields
+                self.fields = fake_fields
+                # TODO: restrcit the related_objects to those
+                # which are available based on fields present in
+                # the new DuckMeta. For example, if the query doesn't
+                # contain the primary key field, then any related_object
+                # pointing to pk must be excluded.
+                self.related_objects = outer_self.model._meta.related_objects
+
+            def get_field(self, name):
+                for field in self.fake_fields:
+                    if field.name == name:
+                        return field
+                raise FieldError()
+
+        class DuckModel(object):
+            _meta = DuckMeta(fake_fields)
+
+            @classmethod
+            def from_db(cls, *args, **kwargs):
+                return outer_self.model.from_db(*args, **kwargs)
+        DuckModel._meta.concrete_model = DuckModel
+        DuckModel._meta.proxy_for_model = DuckModel
+        DuckModel._meta.model = DuckModel
+
+        for field in fake_fields:
+            field.model = DuckModel
+        return DuckModel
+
     @property
     def extra(self):
         if self._extra is None:

@@ -816,14 +816,16 @@ class QuerySet(object):
             return self._filter_or_exclude(None, **filter_obj)
 
     def _combinator_query(self, combinator, *other_qs, **kwargs):
+        from django.db.models.expressions import Ref
+        from django.db.models.sql.datastructures import BaseTable
         # Clone the query so we inherit the select list and everything
         clone = self._clone()
-        # Clear limits and ordering, so they can be reapplied
-        clone.query.clear_ordering(True)
-        clone.query.clear_limits()
-        clone.query.combined_queries = (self.query,) + tuple(qs.query for qs in other_qs)
-        clone.query.combinator = combinator
-        clone.query.combinator_all = kwargs.pop('all', False)
+        clone.query = sql.Query(self.query.create_fake_model(self._fields))
+        for name, annotation in self.query.annotations.items():
+            clone.query.add_annotation(Ref(name, annotation), name)
+        # The new query will have a subquery as it's base table. Might be better to
+        # have a dedicated type for that instead of BaseTable.
+        clone.query.join(BaseTable('subq', 'subq', (self.query,) + tuple(qs.query for qs in other_qs), combinator, kwargs.pop('all', False)))
         return clone
 
     def union(self, *other_qs, **kwargs):

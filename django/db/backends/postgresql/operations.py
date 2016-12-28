@@ -108,6 +108,9 @@ class DatabaseOperations(BaseDatabaseOperations):
         return [sql]
 
     def quote_name(self, name):
+        # Ugly hack!
+        if name.startswith('Col'):
+            return name
         if name.startswith('"') and name.endswith('"'):
             return name  # Quoting once is enough.
         return '"%s"' % name
