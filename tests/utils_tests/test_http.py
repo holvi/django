@@ -6,6 +6,18 @@ from django.utils.datastructures import MultiValueDict
 from django.utils import http
 from django.utils import six
 
+if six.PY2:
+    from urlparse import (
+        ParseResult, SplitResult, _splitnetloc, _splitparams, scheme_chars,
+        uses_params,
+    )
+    _coerce_args = None
+else:
+    from urllib.parse import (
+        ParseResult, SplitResult, _coerce_args, _splitnetloc, _splitparams,
+        scheme_chars, uses_params,
+    )
+
 
 class TestUtilsHttp(unittest.TestCase):
 
@@ -110,6 +122,8 @@ class TestUtilsHttp(unittest.TestCase):
                         'javascript:alert("XSS")',
                         '\njavascript:alert(x)',
                         '\x08//example.com',
+                        'http:999999999',
+                        'ftp:9999999999',
                         '\n'):
             self.assertFalse(http.is_safe_url(bad_url, host='testserver'), "%s should be blocked" % bad_url)
         for good_url in ('/view/?param=http://example.com',
@@ -119,7 +133,8 @@ class TestUtilsHttp(unittest.TestCase):
                      'https://testserver/',
                      'HTTPS://testserver/',
                      '//testserver/',
-                     '/url%20with%20spaces/'):
+                     '/url%20with%20spaces/',
+                     'path/http:2222222222'):
             self.assertTrue(http.is_safe_url(good_url, host='testserver'), "%s should be allowed" % good_url)
 
     def test_urlsafe_base64_roundtrip(self):
